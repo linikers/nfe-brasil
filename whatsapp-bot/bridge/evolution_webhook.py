@@ -1,8 +1,10 @@
 """
 WhatsApp Webhook Handler - Evolution API.
 
-Recebe webhooks da Evolution API e processa mensagens NF-e.
-Também suporta envio de mensagens via Evolution API.
+Persona: atendente humano, linguagem natural, sem códigos técnicos.
+Nunca mostrar: chaves de acesso brutas, códigos de erro, campos XML,
+cabeçalhos como "Hermes" ou "Assistente". Toda resposta deve parecer
+de uma pessoa real ajudando com nota fiscal.
 """
 
 import json
@@ -28,11 +30,11 @@ WHATSAPP_RESTRICTED_MODE = os.getenv("WHATSAPP_RESTRICTED_MODE", "true").lower()
 # Horário comercial
 NFE_BUSINESS_HOUR_START = int(os.getenv("NFE_BUSINESS_HOUR_START", "8"))
 NFE_BUSINESS_HOUR_END = int(os.getenv("NFE_BUSINESS_HOUR_END", "18"))
-NFE_BUSINESS_DAYS = os.getenv("NFE_BUSINESS_DAYS", "0,1,2,3,4")  # seg-sex
+NFE_BUSINESS_DAYS = os.getenv("NFE_BUSINESS_DAYS", "0,1,2,3,4")
 
 
 # ---------------------------------------------------------------------------
-# Detecção de intenção fiscal
+# Respostas naturais (persona humana)
 # ---------------------------------------------------------------------------
 
 def detectar_intencao_nfe(texto: str) -> bool:
@@ -40,7 +42,7 @@ def detectar_intencao_nfe(texto: str) -> bool:
     texto_lower = texto.lower().strip()
 
     padroes = [
-        r"\b\d{44}\b",           # Chave de acesso
+        r"\b\d{44}\b",
         r"\bnf[-\s]?e\b",
         r"\bnfc[-\s]?e\b",
         r"\bnf[-\s]?se\b",
@@ -64,6 +66,10 @@ def detectar_intencao_nfe(texto: str) -> bool:
         if re.search(padrao, texto_lower):
             return True
 
+    # Menus numéricos
+    if texto.strip() in [str(i) for i in range(1, 9)]:
+        return True
+
     return False
 
 
@@ -72,23 +78,40 @@ def dentro_do_horario() -> bool:
     from datetime import datetime
     now = datetime.now()
     dia_semana = now.weekday()
-
     if dia_semana not in [int(d) for d in NFE_BUSINESS_DAYS.split(",")]:
         return False
-
     return NFE_BUSINESS_HOUR_START <= now.hour < NFE_BUSINESS_HOUR_END
 
 
 def formatar_chave(texto: str) -> str | None:
-    """Extrai chave de 44 dígitos do texto."""
+    """Extrai chave de 44 dígitos."""
     digitos = re.sub(r"\D", "", texto)
     if len(digitos) == 44:
         return digitos
     return None
 
 
+def _formatar_cnpj(cnpj: str) -> str:
+    """Formata CNPJ: 12.345.678/0001-90"""
+    cnpj = re.sub(r"\D", "", cnpj)
+    if len(cnpj) == 14:
+        return f"{cnpj[:2]}.{cnpj[2:5]}.{cnpj[5:8]}/{cnpj[8:12]}-{cnpj[12:]}"
+    return cnpj
+
+
+def _formatar_valor(valor: str | float | None) -> str:
+    """Formata valor: R$ 1.234,56"""
+    if not valor:
+        return "R$ 0,00"
+    try:
+        v = float(str(valor).replace(",", "."))
+        return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except (ValueError, TypeError):
+        return f"R$ {valor}"
+
+
 # ---------------------------------------------------------------------------
-# Envio de mensagens via Evolution API
+# Envio de mensagens
 # ---------------------------------------------------------------------------
 
 async def enviar_whatsapp(numero: str, mensagem: str, instance: str = "nfe-brasil") -> bool:
@@ -98,14 +121,8 @@ async def enviar_whatsapp(numero: str, mensagem: str, instance: str = "nfe-brasi
         return False
 
     url = f"{EVOLUTION_API_URL}/message/sendText/{instance}"
-    headers = {
-        "apikey": EVOLUTION_API_KEY,
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "number": numero,
-        "text": mensagem,
-    }
+    headers = {"apikey": EVOLUTION_API_KEY, "Content-Type": "application/json"}
+    payload = {"number": numero, "text": mensagem}
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(url, json=payload, headers=headers, timeout=30)
@@ -115,66 +132,35 @@ async def enviar_whatsapp(numero: str, mensagem: str, instance: str = "nfe-brasi
         return True
 
 
-async def enviar_whatsapp_arquivo(numero: str, caminho: str, instance: str = "nfe-brasil") -> bool:
-    """Envia arquivo (PDF, XML) via Evolution API."""
-    if not EVOLUTION_API_KEY:
-        return False
-
-    url = f"{EVOLUTION_API_URL}/message/sendFile/{instance}"
-    headers = {
-        "apikey": EVOLUTION_API_KEY,
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "number": numero,
-        "filePath": caminho,
-    }
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(url, json=payload, headers=headers, timeout=60)
-        return resp.status_code in (200, 201)
-
-
 # ---------------------------------------------------------------------------
-# Processamento de mensagens NF-e
+# Chamada ao MCP Server
 # ---------------------------------------------------------------------------
 
 async def call_mcp_tool(tool_name: str, arguments: dict[str, Any]) -> dict:
     """Chama uma tool do MCP Server."""
-    import json
-
     async with httpx.AsyncClient() as client:
-        # Initialize
         init_resp = await client.post(
             MCP_SERVER_URL,
             json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
                 "params": {
                     "protocolVersion": "2025-03-26",
                     "capabilities": {},
                     "clientInfo": {"name": "whatsapp-bot", "version": "1.0"},
                 },
             },
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json, text/event-stream",
-            },
+            headers={"Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
             timeout=30,
         )
 
         session_id = init_resp.headers.get("mcp-session-id")
         if not session_id:
-            return {"error": "Falha ao inicializar sessão MCP"}
+            return {"error": "Serviço temporariamente indisponível. Tente novamente em instantes."}
 
-        # Call tool
         tool_resp = await client.post(
             MCP_SERVER_URL,
             json={
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "tools/call",
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
                 "params": {"name": tool_name, "arguments": arguments},
             },
             headers={
@@ -190,20 +176,25 @@ async def call_mcp_tool(tool_name: str, arguments: dict[str, Any]) -> dict:
                 data = json.loads(line[6:])
                 result = data.get("result", {})
                 if result.get("isError"):
-                    return {"error": result.get("content", [{}])[0].get("text", "Erro")}
+                    return {"error": True}
                 return result.get("structuredContent", result.get("content", [{}]))
 
-    return {"error": "Resposta vazia do MCP Server"}
+    return {"error": True}
 
+
+# ---------------------------------------------------------------------------
+# Processamento - LINGUAGEM 100% NATURAL
+# ---------------------------------------------------------------------------
 
 async def processar_nfe(texto: str) -> str | None:
-    """Processa mensagem fiscal e retorna resposta."""
+    """Processa mensagem fiscal e retorna resposta em linguagem natural."""
 
     # Fora do horário
     if not dentro_do_horario():
         return (
-            f"Nosso horário de atendimento é das {NFE_BUSINESS_HOUR_START}h "
-            f"às {NFE_BUSINESS_HOUR_END}h. Aguarde retorno!"
+            f"Olá! No momento estou fora do horário de atendimento "
+            f"(das {NFE_BUSINESS_HOUR_START}h às {NFE_BUSINESS_HOUR_END}h). "
+            f"Amanhã retorno! 😊"
         )
 
     # Chave de acesso (44 dígitos)
@@ -211,47 +202,86 @@ async def processar_nfe(texto: str) -> str | None:
     if chave:
         resultado = await call_mcp_tool("consultar_nfe", {"chave_acesso": chave})
         if "error" in resultado:
-            return f"Não foi possível consultar a nota: {resultado['error']}"
+            return (
+                "Não consegui localizar essa nota. Pode verificar se a "
+                "chave está correta? São 44 dígitos, você encontra no DANFE."
+            )
 
         emitente = resultado.get("emitente", {})
         destinatario = resultado.get("destinatario", {})
         total = resultado.get("total", {})
+        nome_emitente = emitente.get("xNome", "o emitente")
+        nome_dest = destinatario.get("xNome", "o destinatário")
+        valor = _formatar_valor(total.get("vNF"))
 
         return (
-            f"📋 *NF-e Consultada*\n\n"
-            f"*Emitente:* {emitente.get('xNome', 'N/A')}\n"
-            f"*CNPJ:* {emitente.get('cnpj', 'N/A')}\n"
-            f"*Destinatário:* {destinatario.get('xNome', 'N/A')}\n"
-            f"*Valor:* R$ {total.get('vNF', '0,00')}\n\n"
-            f"Posso gerar o DANFE ou validar o XML se precisar."
+            f"Consegui consultar a nota! 😊\n\n"
+            f"Emitida por *{nome_emitente}*\n"
+            f"Destinada a *{nome_dest}*\n"
+            f"Valor total: *{valor}*\n\n"
+            f"Posso gerar o DANFE em PDF ou validar o XML se precisar. "
+            f"O que mais posso ajudar?"
         )
 
     # XML
     if "<?xml" in texto.lower() or "<nfe" in texto.lower():
         resultado = await call_mcp_tool("parse_nfe_xml", {"xml_content": texto})
         if "error" in resultado:
-            return f"Erro ao processar XML: {resultado['error']}"
-        return "XML processado com sucesso!"
+            return "Não consegui processar esse XML. Pode verificar se é um XML de NF-e válido?"
+        return (
+            "Recebi o XML! 📄 Consegui processar ele certinho. "
+            "Quer que eu gere o DANFE em PDF ou faça alguma outra verificação?"
+        )
 
     # Consulta CNPJ
     cnpj_match = re.search(r"\b\d{14}\b", re.sub(r"\D", "", texto))
     if cnpj_match:
         resultado = await call_mcp_tool("consultar_cnpj", {"cnpj": cnpj_match.group()})
         if "error" not in resultado:
+            nome = resultado.get("razao_social", "empresa")
+            situacao = resultado.get("situacao_cadastral", "desconhecida")
+            cnpj_fmt = _formatar_cnpj(cnpj_match.group())
+
+            # Traduzir situação
+            sit_natural = {
+                "ATIVA": "está ativa e regular",
+                "INAPTA": "está inapta",
+                "SUSPENSA": "está suspensa",
+                "CANCELADA": "foi cancelada",
+                "BAIXADA": "foi baixada",
+            }.get(situacao.upper(), f"tem situação cadastral: {situacao}")
+
             return (
-                f"🏢 *Consulta CNPJ*\n\n"
-                f"*Razão Social:* {resultado.get('razao_social', 'N/A')}\n"
-                f"*Situação:* {resultado.get('situacao_cadastral', 'N/A')}"
+                f"Encontrei a empresa! 🏢\n\n"
+                f"*{nome}*\n"
+                f"CNPJ: {cnpj_fmt}\n"
+                f"A empresa {sit_natural}.\n\n"
+                f"Quer saber mais alguma coisa sobre ela?"
             )
 
-    # Menu
+    # Consulta SEFAZ
+    if "sefaz" in texto.lower() or "status" in texto.lower():
+        uf_match = re.search(r"\b([A-Z]{2})\b", texto.upper())
+        if uf_match:
+            uf = uf_match.group(1)
+            resultado = await call_mcp_tool("consultar_status_sefaz", {"uf": uf})
+            if "error" not in resultado:
+                status = resultado.get("status", "indisponível")
+                if "indispon" in str(status).lower():
+                    return (
+                        f"O serviço da SEFAZ de {uf} está instável no momento. "
+                        f"Se precisar emitir nota, tente novamente em alguns minutos."
+                    )
+                return f"O serviço da SEFAZ de {uf} está funcionando normalmente! ✅"
+
+    # Menu / Saudação
     return (
-        "Olá! Sou o assistente de notas fiscais.\n\n"
+        "Olá! 👋 Sou o assistente de notas fiscais.\n\n"
         "Posso ajudar com:\n"
-        "• Consulta de NF-e (envie a chave de 44 dígitos)\n"
-        "• Validação de XML\n"
-        "• Consulta de CNPJ\n"
-        "• Status na SEFAZ\n\n"
+        "• Consultar uma NF-e (envie a chave de 44 dígitos)\n"
+        "• Validar XML de nota fiscal\n"
+        "• Consultar CNPJ de empresa\n"
+        "• Verificar status da SEFAZ\n\n"
         "O que você precisa?"
     )
 
@@ -268,14 +298,11 @@ async def webhook_evolution(request: Request):
     except Exception:
         return JSONResponse({"status": "error"}, status_code=400)
 
-    # Evolution API envia differentes tipos de evento
     event = body.get("event", "")
 
-    # Só processar mensagens recebidas
     if event not in ("messages.upsert", "messages.set"):
         return JSONResponse({"status": "ok"})
 
-    # Extrair dados da mensagem
     data = body.get("data", {})
     instance = body.get("instance", "nfe-brasil")
 
@@ -283,7 +310,7 @@ async def webhook_evolution(request: Request):
     if data.get("key", {}).get("fromMe", False):
         return JSONResponse({"status": "ok"})
 
-    # Ignorar mensagens de grupo
+    # Ignorar grupos
     if data.get("key", {}).get("remoteJid", "").endswith("@g.us"):
         return JSONResponse({"status": "ok"})
 
@@ -295,7 +322,6 @@ async def webhook_evolution(request: Request):
     if not texto:
         return JSONResponse({"status": "ok"})
 
-    # Número do remetente
     numero = data.get("key", {}).get("remoteJid", "").replace("@s.whatsapp.net", "")
 
     logger.info("Mensagem de %s: %s", numero, texto[:50])
@@ -308,8 +334,8 @@ async def webhook_evolution(request: Request):
     elif WHATSAPP_RESTRICTED_MODE:
         await enviar_whatsapp(
             numero,
-            "Desculpe, no momento só posso ajudar com notas fiscais. "
-            "Envie uma chave de acesso ou pergunte sobre NF-e.",
+            "Olá! No momento só posso ajudar com questões de nota fiscal. "
+            "Envie uma chave de acesso, XML ou pergunte sobre NF-e. 😊",
             instance,
         )
 
@@ -318,9 +344,4 @@ async def webhook_evolution(request: Request):
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "ok",
-        "service": "nfe-whatsapp-bot",
-        "evolution_api": EVOLUTION_API_URL,
-        "mcp_server": MCP_SERVER_URL,
-    }
+    return {"status": "ok", "service": "nfe-whatsapp-bot"}
