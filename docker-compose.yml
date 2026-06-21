@@ -2,6 +2,82 @@ version: "3.8"
 
 services:
   # ============================================
+  # PostgreSQL - Database do Evolution API
+  # ============================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: nfe-postgres
+    environment:
+      POSTGRES_DB: evolution_db
+      POSTGRES_USER: evolution
+      POSTGRES_PASSWORD: nfe-senha-pg
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evolution"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # Redis - Cache do Evolution API
+  # ============================================
+  redis:
+    image: redis:7-alpine
+    container_name: nfe-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================
+  # Evolution API - WhatsApp Server
+  # ============================================
+  evolution-api:
+    image: evoapicloud/evolution-api:latest
+    container_name: nfe-evolution-api
+    ports:
+      - "8080:8080"
+    environment:
+      - SERVER_PORT=8080
+      - SERVER_URL=http://localhost:8080
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://evolution:nfe-senha-pg@postgres:5432/evolution_db?schema=evolution_api
+      - DATABASE_CONNECTION_CLIENT_NAME=nfe_brasil
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
+      - DATABASE_SAVE_DATA_CONTACTS=true
+      - DATABASE_SAVE_DATA_CHATS=true
+      - WEBHOOK_GLOBAL_ENABLED=true
+      - WEBHOOK_GLOBAL_URL=http://whatsapp-bot:3001/webhook/evolution
+      - WEBHOOK_EVENTS_MESSAGES_UPSERT=true
+      - WEBHOOK_EVENTS_MESSAGES_SET=true
+      - WEBHOOK_EVENTS_CONNECTION_UPDATE=true
+      - WEBHOOK_EVENTS_QRCODE_UPDATED=true
+      - AUTHENTICATION_API_KEY=nfe-brasil-api-key
+      - LOG_LEVEL=ERROR,WARN,INFO
+      - LOG_BAILEYS=warn
+      - DEL_INSTANCE=false
+      - TELEMETRY_ENABLED=false
+      - CORS_ORIGIN=*
+    volumes:
+      - evolution_instances:/evolution/instances
+      - evolution_store:/evolution/store
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ============================================
   # MCP Server - Notas Fiscais Brasileiras
   # ============================================
   mcp-server:
@@ -16,7 +92,6 @@ services:
       - PORT=8000
       - HOST=0.0.0.0
     volumes:
-      # Certificados A1 (opcional - para operações com SEFAZ)
       - ./certificados:/app/certificados:ro
     restart: unless-stopped
     healthcheck:
@@ -26,7 +101,7 @@ services:
       retries: 3
 
   # ============================================
-  # WhatsApp Bot - Bridge + Handler
+  # WhatsApp Bot - Handler de mensagens
   # ============================================
   whatsapp-bot:
     build:
@@ -38,25 +113,16 @@ services:
     environment:
       - PORT=3001
       - MCP_SERVER_URL=http://mcp-server:8000/mcp
-    env_file:
-      - ./whatsapp-bot/.env
+      - EVOLUTION_API_URL=http://evolution-api:8080
+      - EVOLUTION_API_KEY=nfe-brasil-api-key
     depends_on:
       mcp-server:
         condition: service_healthy
+      evolution-api:
+        condition: service_started
     restart: unless-stopped
 
-  # ============================================
-  # (Opcional) Nginx - Reverse Proxy
-  # Descomente para produção com HTTPS
-  # ============================================
-  # nginx:
-  #   image: nginx:alpine
-  #   ports:
-  #     - "80:80"
-  #     - "443:443"
-  #   volumes:
-  #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-  #     - ./nginx/certs:/etc/nginx/certs:ro
-  #   depends_on:
-  #     - mcp-server
-  #     - whatsapp-bot
+volumes:
+  postgres_data:
+  evolution_instances:
+  evolution_store:

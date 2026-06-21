@@ -53,3 +53,6 @@ mcp-server/dist/
 mcp-server/build/
 mcp-server/*.egg-info/
 mcp-server/src/*.egg-info/
+
+# Evolution API
+evolution-api/.env
