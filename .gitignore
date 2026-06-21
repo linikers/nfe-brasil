@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.env
+
+# Certificados (nunca commitar)
+*.pfx
+*.p12
+*.pem
+certificados/
+
+# Logs
+*.log
+
+# MCP Server specific
+mcp-server/.venv/
+mcp-server/dist/
+mcp-server/build/
+mcp-server/*.egg-info/
+mcp-server/src/*.egg-info/

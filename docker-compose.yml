@@ -1,0 +1,62 @@
+version: "3.8"
+
+services:
+  # ============================================
+  # MCP Server - Notas Fiscais Brasileiras
+  # ============================================
+  mcp-server:
+    build:
+      context: ./mcp-server
+      dockerfile: Dockerfile
+    container_name: nfe-mcp-server
+    ports:
+      - "8000:8000"
+    environment:
+      - FASTMCP_TRANSPORT=http
+      - PORT=8000
+      - HOST=0.0.0.0
+    volumes:
+      # Certificados A1 (opcional - para operações com SEFAZ)
+      - ./certificados:/app/certificados:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/mcp"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ============================================
+  # WhatsApp Bot - Bridge + Handler
+  # ============================================
+  whatsapp-bot:
+    build:
+      context: ./whatsapp-bot
+      dockerfile: Dockerfile
+    container_name: nfe-whatsapp-bot
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - MCP_SERVER_URL=http://mcp-server:8000/mcp
+    env_file:
+      - ./whatsapp-bot/.env
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ============================================
+  # (Opcional) Nginx - Reverse Proxy
+  # Descomente para produção com HTTPS
+  # ============================================
+  # nginx:
+  #   image: nginx:alpine
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./nginx/certs:/etc/nginx/certs:ro
+  #   depends_on:
+  #     - mcp-server
+  #     - whatsapp-bot
