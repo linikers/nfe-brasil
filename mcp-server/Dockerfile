@@ -2,17 +2,20 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Instalar dependências do sistema
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
-# Copiar e instalar dependências Python
+# Copiar pyproject.toml primeiro pra instalar deps
 COPY pyproject.toml .
-RUN pip install --no-cache-dir -e "." 2>/dev/null || pip install --no-cache-dir .
+COPY README.md .
+
+# Instalar dependências
+RUN pip install --no-cache-dir . 2>/dev/null || true
 
 # Copiar código fonte
 COPY src/ src/
+
+# Instalar o pacoto em modo editável
+RUN pip install --no-cache-dir -e "." 2>/dev/null || pip install --no-cache-dir .
 
 EXPOSE 8000
 

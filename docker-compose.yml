@@ -1,8 +1,4 @@
-
 services:
-  # ============================================
-  # PostgreSQL - Database do Evolution API
-  # ============================================
   nfe-postgres:
     image: postgres:16-alpine
     container_name: nfe-postgres
@@ -21,9 +17,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ============================================
-  # Redis - Cache do Evolution API
-  # ============================================
   nfe-redis:
     image: redis:7-alpine
     container_name: nfe-redis
@@ -36,9 +29,6 @@ services:
       timeout: 5s
       retries: 5
 
-  # ============================================
-  # Evolution API - WhatsApp Server
-  # ============================================
   nfe-evolution-api:
     image: evoapicloud/evolution-api:latest
     container_name: nfe-evolution-api
@@ -59,7 +49,7 @@ services:
       - DATABASE_SAVE_IS_ON_WHATSAPP=true
       - DATABASE_DELETE_MESSAGE=true
       - WEBHOOK_GLOBAL_ENABLED=true
-      - WEBHOOK_GLOBAL_URL=http://nfe-whatsapp-bot:3002/webhook/evolution
+      - WEBHOOK_GLOBAL_URL=http://nfe-whatsapp-bot:3010/webhook/evolution
       - WEBHOOK_EVENTS_MESSAGES_UPSERT=true
       - WEBHOOK_EVENTS_MESSAGES_SET=true
       - WEBHOOK_EVENTS_CONNECTION_UPDATE=true
@@ -83,9 +73,6 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # ============================================
-  # MCP Server - 49 Tools Notas Fiscais
-  # ============================================
   nfe-mcp-server:
     build:
       context: ./mcp-server
@@ -101,23 +88,20 @@ services:
       - ./certificados:/app/certificados:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/mcp"]
+      test: ["CMD", "curl", "-s", "http://localhost:8000/mcp"]
       interval: 30s
       timeout: 10s
       retries: 3
 
-  # ============================================
-  # WhatsApp Bot - Webhook Handler
-  # ============================================
   nfe-whatsapp-bot:
     build:
       context: ./whatsapp-bot
       dockerfile: Dockerfile
     container_name: nfe-whatsapp-bot
     ports:
-      - "3002:3002"
+      - "3010:3010"
     environment:
-      - PORT=3002
+      - PORT=3010
       - MCP_SERVER_URL=http://nfe-mcp-server:8000/mcp
       - EVOLUTION_API_URL=http://nfe-evolution-api:8080
       - EVOLUTION_API_KEY=nfe-brasil-2026

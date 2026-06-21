@@ -10,6 +10,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY bridge/ bridge/
 COPY bot/ bot/
 
-EXPOSE 3002
+EXPOSE 3010
 
-CMD ["uvicorn", "bridge.evolution_webhook:app", "--host", "0.0.0.0", "--port", "3002"]
+CMD ["uvicorn", "bridge.evolution_webhook:app", "--host", "0.0.0.0", "--port", "3010"]
