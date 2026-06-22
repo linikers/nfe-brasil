@@ -10,8 +10,8 @@ import {
 } from "@mui/material";
 import { QrCode2, Refresh, CheckCircle, Error } from "@mui/icons-material";
 
-const EVOLUTION_API = "http://2.24.115.130:8085";
-const API_KEY = "nfe-br...ey";
+const EVOLUTION_API = "https://2.24.115.130:3004/evo";
+const API_KEY = "nfe-brasil-2026";
 const INSTANCE = "nfe-brasil";
 
 export default function WhatsAppQR() {
