@@ -19,6 +19,7 @@ from nfelib.nfe.bindings.v4_0.leiaute_nfe_v4_00 import (
     PisntCst,
     PisoutrCst,
     TenderEmi,
+    TinfRespTec,
     Tnfe,
 )
 from nfelib.nfe.bindings.v4_0.nfe_v4_00 import Nfe
@@ -206,6 +207,20 @@ def _item_det(item: Item, indice: int) -> Any:
     )
 
 
+def _responsavel_tecnico(rt: Any) -> TinfRespTec | None:
+    """Grupo infRespTec — exigido quando procEmi=0 (rejeicao 972 sem ele)."""
+    if rt is None:
+        return None
+    return TinfRespTec(
+        CNPJ=rt.cnpj,
+        xContato=rt.contato,
+        email=rt.email,
+        fone=_so_digitos(rt.fone),
+        idCSRT=rt.id_csrt,
+        hashCSRT=rt.hash_csrt,
+    )
+
+
 def _inf_nfe_supl(dados: DadosNota, chave: str, uf: str = "PR") -> Any:
     """Grupo infNFeSupl da NFC-e (QR Code + URL de consulta).
 
@@ -315,6 +330,7 @@ def construir_tnfe(dados: DadosNota, chave: str, uf: str = "PR") -> Nfe:
         infAdic=Tnfe.InfNfe.InfAdic(infCpl=dados.observacoes)
         if dados.observacoes
         else None,
+        infRespTec=_responsavel_tecnico(dados.responsavel_tecnico),
         versao="4.00",
         Id=f"NFe{chave}",
     )

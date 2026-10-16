@@ -143,6 +143,30 @@ class Pagamento(BaseModel):
     valor: Decimal
 
 
+class ResponsavelTecnico(BaseModel):
+    """Responsavel tecnico pelo sistema emissor (grupo infRespTec).
+
+    Exigido pela SEFAZ quando a emissao e feita por aplicativo do proprio
+    contribuinte (procEmi=0). Sem os dados completos, rejeicao 972.
+    id_csrt/hash_csrt so sao exigidos nas UFs que adotam o CSRT.
+    """
+
+    cnpj: str
+    contato: str = Field(min_length=2, max_length=60)
+    email: str = Field(min_length=6, max_length=60)
+    fone: str
+    id_csrt: str | None = None
+    hash_csrt: str | None = None
+
+    @field_validator("cnpj")
+    @classmethod
+    def _cnpj(cls, v: str) -> str:
+        v = "".join(filter(str.isdigit, v))
+        if len(v) != 14:
+            raise ValueError("CNPJ do responsavel tecnico deve ter 14 digitos")
+        return v
+
+
 class DadosNota(BaseModel):
     """Payload completo de uma emissao."""
 
@@ -159,6 +183,7 @@ class DadosNota(BaseModel):
     destinatario: Destinatario | None = None
     itens: list[Item] = Field(min_length=1)
     pagamentos: list[Pagamento] = Field(min_length=1)
+    responsavel_tecnico: ResponsavelTecnico | None = None
 
     finalidade: str = "1"
     tipo_documento: str = "1"

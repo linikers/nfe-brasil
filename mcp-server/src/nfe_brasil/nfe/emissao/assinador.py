@@ -20,12 +20,12 @@ from signxml.algorithms import (
     SignatureMethod,
 )
 from signxml.signer import XMLSigner
-from signxml.verifier import SignatureConfiguration, XMLVerifier
 
 from .certificado import CertificadoA1
 from .chave import validar_chave
 
 NAMESPACE_NFE = "http://www.portalfiscal.inf.br/nfe"
+NAMESPACE_DSIG = "http://www.w3.org/2000/09/xmldsig#"
 
 
 class AssinaturaError(ValueError):
@@ -69,6 +69,10 @@ def assinar(
         digest_algorithm=DigestAlgorithm.SHA1,
         c14n_algorithm=CanonicalizationMethod.CANONICAL_XML_1_0,
     )
+    # A NF-e exige a assinatura no namespace PADRAO, sem prefixo:
+    # <Signature xmlns="http://www.w3.org/2000/09/xmldsig#">. Com prefixo (ds:)
+    # a SEFAZ devolve 587 "Usar somente o namespace padrao da NF-e".
+    assinador.namespaces = {None: NAMESPACE_DSIG}  # type: ignore[dict-item]
 
     raiz_assinada = assinador.sign(
         raiz,
@@ -84,6 +88,22 @@ def assinar(
     )
 
 
+def _c14n_isolado(elemento: etree._Element) -> bytes:
+    """C14N 1.0 do elemento, isolado da arvore.
+
+    Reparseia o fragmento para que as declaracoes de namespace venham no proprio
+    elemento: canonizar uma sub-arvore que herda o namespace default do pai faz
+    o lxml emitir `xmlns=""` espurio, o que nao corresponde ao que o validador
+    da SEFAZ (Java/Xerces) calcula.
+    """
+    fragmento = etree.tostring(elemento)
+    return bytes(
+        etree.tostring(
+            etree.fromstring(fragmento), method="c14n", exclusive=False, with_comments=False
+        )
+    )
+
+
 def _titular_do_xml(raiz: etree._Element) -> str | None:
     """Le o CN do certificado embutido em Signature/KeyInfo/X509Certificate."""
     import base64
@@ -92,7 +112,7 @@ def _titular_do_xml(raiz: etree._Element) -> str | None:
     from cryptography.x509.oid import NameOID
 
     nos = raiz.xpath(
-        "//ds:X509Certificate/text()", namespaces={"ds": "http://www.w3.org/2000/09/xmldsig#"}
+        "//ds:X509Certificate/text()", namespaces={"ds": NAMESPACE_DSIG}
     )
     if not nos:
         return None
@@ -104,25 +124,66 @@ def _titular_do_xml(raiz: etree._Element) -> str | None:
     return str(atributos.get(NameOID.COMMON_NAME, "")) or None
 
 
-def verificar(xml: str | bytes, ca_pem_file: str | None = None) -> dict[str, str]:
-    """Verifica a assinatura XMLDSig do XML (RSA-SHA1/SHA-1) e devolve o titular."""
-    dados = xml.encode("utf-8") if isinstance(xml, str) else xml
-    configuracao = SignatureConfiguration(
-        require_x509=True,
-        expect_references=1,
-        signature_methods=frozenset({SignatureMethod.RSA_SHA1}),
-        digest_algorithms=frozenset({DigestAlgorithm.SHA1}),
-    )
+def verificar(xml: str | bytes) -> dict[str, str]:
+    """Verifica a assinatura XMLDSig da NF-e de forma autocontida.
 
+    Confere, com o certificado embutido no proprio XML:
+      1. a assinatura RSA-SHA1 sobre o SignedInfo canonizado;
+      2. o digest SHA-1 do elemento referenciado (o infNFe).
+
+    Nao depende de cadeia de confianca externa — o certificado ICP-Brasil
+    ja e validado pela SEFAZ na transmissao.
+    """
+    import base64
+    import hashlib
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+    dados = xml.encode("utf-8") if isinstance(xml, str) else xml
+    raiz = etree.fromstring(dados)
+    assinatura = raiz.find(f".//{{{NAMESPACE_DSIG}}}Signature")
+    if assinatura is None:
+        raise AssinaturaError("XML sem elemento Signature")
+
+    cert_b64 = assinatura.find(f".//{{{NAMESPACE_DSIG}}}X509Certificate")
+    if cert_b64 is None or not cert_b64.text:
+        raise AssinaturaError("Signature sem certificado X509")
+    certificado = x509.load_der_x509_certificate(base64.b64decode(cert_b64.text.strip()))
+
+    # 1. assinatura sobre o SignedInfo
+    signed_info = assinatura.find(f"{{{NAMESPACE_DSIG}}}SignedInfo")
+    valor = assinatura.findtext(f"{{{NAMESPACE_DSIG}}}SignatureValue") or ""
+    chave_publica = certificado.public_key()
+    if not isinstance(chave_publica, rsa.RSAPublicKey):
+        raise AssinaturaError("Certificado nao usa chave RSA")
     try:
-        XMLVerifier().verify(dados, ca_pem_file=ca_pem_file, expect_config=configuracao)
+        chave_publica.verify(
+            base64.b64decode(valor.strip()),
+            _c14n_isolado(signed_info),
+            padding.PKCS1v15(),
+            hashes.SHA1(),
+        )
     except Exception as exc:
         raise AssinaturaError(f"Assinatura invalida: {exc}") from exc
 
-    raiz = etree.fromstring(dados)
-    inf = raiz.find(f"{{{NAMESPACE_NFE}}}infNFe")
+    # 2. digest do elemento referenciado
+    referencia = assinatura.find(f".//{{{NAMESPACE_DSIG}}}Reference")
+    if referencia is None:
+        raise AssinaturaError("Signature sem Reference")
+    uri = (referencia.get("URI") or "").lstrip("#")
+    alvo = raiz.find(f".//*[@Id='{uri}']")
+    if alvo is None:
+        raise AssinaturaError(f"Elemento referenciado nao encontrado: #{uri}")
+    digest_esperado = base64.b64decode(
+        referencia.findtext(f"{{{NAMESPACE_DSIG}}}DigestValue") or ""
+    )
+    if hashlib.sha1(_c14n_isolado(alvo)).digest() != digest_esperado:
+        raise AssinaturaError("Digest do elemento referenciado diverge")
+
     return {
         "assinatura_valida": "true",
         "titular": _titular_do_xml(raiz) or "desconhecido",
-        "chave": (inf.get("Id") or "").removeprefix("NFe") if inf is not None else "",
+        "chave": uri.removeprefix("NFe"),
     }

@@ -19,6 +19,7 @@ from .schemas import (
     Endereco,
     Item,
     Pagamento,
+    ResponsavelTecnico,
 )
 from .transporte import ENDPOINTS, SefazError, Servico, endpoint
 
@@ -34,6 +35,7 @@ __all__ = [
     "Endereco",
     "Item",
     "Pagamento",
+    "ResponsavelTecnico",
     "ResultadoEmissao",
     "SefazError",
     "Servico",

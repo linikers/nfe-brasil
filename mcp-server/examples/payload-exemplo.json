@@ -38,5 +38,11 @@
   "pagamentos": [
     { "forma": "01", "valor": "10.00" }
   ],
-  "observacoes": "NOTA EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL"
+  "observacoes": "NOTA EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL",
+  "responsavel_tecnico": {
+    "cnpj": "00000000000000",
+    "contato": "NOME DO CONTATO",
+    "email": "contato@responsaveltecnico.com.br",
+    "fone": "4432288785"
+  }
 }

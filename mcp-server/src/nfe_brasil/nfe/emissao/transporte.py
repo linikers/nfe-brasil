@@ -10,11 +10,30 @@ Fontes: tabela de webservices da SEFA/PR (sped.fazenda.pr.gov.br) e
 
 from __future__ import annotations
 
-import re
+import os
+import ssl
 from dataclasses import dataclass
 from enum import Enum
 
 import httpx
+
+# httpx usa o bundle do certifi por padrao, que nao tem as raizes ICP-Brasil.
+# Os servidores da SEFAZ usam cadeia ICP-Brasil (AC Raiz v10), entao apontamos
+# para o trust store do sistema — onde a raiz oficial esta instalada.
+CA_BUNDLE_PADRAO = "/etc/ssl/certs/ca-certificates.crt"
+
+
+def contexto_tls(ca_bundle: str | None = None) -> ssl.SSLContext:
+    """Contexto TLS mutual auth para os webservices da SEFAZ.
+
+    O TLS e fixado em 1.2: os servidores da SEFAZ-PR nao completam o handshake
+    em TLS 1.3 (respondem *handshake failure* / *bad certificate*).
+    """
+    caminho = ca_bundle or os.environ.get("SEFAZ_CA_BUNDLE") or CA_BUNDLE_PADRAO
+    contexto = ssl.create_default_context(cafile=caminho if os.path.exists(caminho) else None)
+    contexto.minimum_version = ssl.TLSVersion.TLSv1_2
+    contexto.maximum_version = ssl.TLSVersion.TLSv1_2
+    return contexto
 
 NAMESPACE_NFE = "http://www.portalfiscal.inf.br/nfe"
 _NS_AUTORIZACAO = "http://www.portalfiscal.inf.br/nfe/wsdl/NFeAutorizacao4"
@@ -123,21 +142,39 @@ def _envelope(ns_servico: str, conteudo: str) -> str:
 
 
 def _corpo_resposta(texto: str) -> str:
-    """Extrai o conteudo de dentro do soap:Body da resposta."""
-    sem_quebras = texto.replace("\n", "")
-    casamento = re.search(
-        r"<(?:soap|soapenv|env):Body[^>]*>(.*?)</(?:soap|soapenv|env):Body>",
-        sem_quebras,
-        re.DOTALL,
-    )
-    if not casamento:
+    """Extrai o elemento de dados de dentro do soap:Body da resposta.
+
+    A resposta vem como <soap:Body><nfeResultMsg><retEnviNFe>...</...>: o parser
+    do leiaute precisa do elemento interno, nao do envelope.
+    """
+    try:
+        from lxml import etree
+
+        raiz = etree.fromstring(texto.encode("utf-8") if isinstance(texto, str) else texto)
+    except Exception as exc:
+        raise SefazError("Resposta da SEFAZ nao e XML valido") from exc
+
+    corpo = None
+    for elemento in raiz.iter():
+        nome = etree.QName(elemento)
+        if nome.localname == "Body" and (nome.namespace or "").startswith(
+            "http://www.w3.org/2003/05/soap"
+        ):
+            corpo = elemento
+            break
+
+    if corpo is None or len(corpo) == 0:
         raise SefazError("Resposta da SEFAZ sem corpo SOAP reconhecivel")
 
-    interno = casamento.group(1)
-    filhos = re.findall(r"<(?![?/])([A-Za-z0-9:_.-]+)(?=[\s>/])[^>]*>(.*)</\1>", interno, re.DOTALL)
-    if not filhos:
-        raise SefazError("Corpo SOAP sem elemento de dados")
-    return f"<{filhos[0][0]}>{filhos[0][1]}</{filhos[0][0]}>"
+    dados = corpo[0]
+    while (
+        len(dados) > 0
+        and isinstance(dados[0].tag, str)
+        and etree.QName(dados).localname.lower().startswith("nferesultmsg")
+    ):
+        dados = dados[0]
+
+    return str(etree.tostring(dados, encoding="unicode"))
 
 
 def enviar(
@@ -152,6 +189,7 @@ def enviar(
 ) -> RespostaSefaz:
     """Envia um XML para o webservice da SEFAZ e devolve o XML de resposta."""
     url = endpoint(servico, ambiente, uf, modelo)
+    ca_bundle = os.environ.get("SEFAZ_CA_BUNDLE") or CA_BUNDLE_PADRAO
     ns = {
         Servico.AUTORIZACAO: _NS_AUTORIZACAO,
         Servico.RET_AUTORIZACAO: _NS_RET_AUTORIZACAO,
@@ -162,7 +200,9 @@ def enviar(
     cert_path, key_path = certificado
 
     try:
-        with httpx.Client(cert=(cert_path, key_path), timeout=timeout, verify=True) as cliente:
+        with httpx.Client(
+            cert=(cert_path, key_path), timeout=timeout, verify=contexto_tls(ca_bundle)
+        ) as cliente:
             resposta = cliente.post(
                 url,
                 content=envelope.encode("utf-8"),

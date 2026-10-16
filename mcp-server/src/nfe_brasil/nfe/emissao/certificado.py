@@ -45,7 +45,7 @@ class CertificadoA1:
 
         conteudo = self.caminho.read_bytes()
         try:
-            chave, cert, _extras = pkcs12.load_key_and_certificates(
+            chave, cert, extras = pkcs12.load_key_and_certificates(
                 conteudo, senha.encode("utf-8") if senha else None
             )
         except Exception as exc:  # senha errada, arquivo corrompido, formato invalido
@@ -58,6 +58,9 @@ class CertificadoA1:
 
         self._chave = chave
         self._cert = cert
+        # Intermediarias do .pfx: precisam ir no handshake TLS, senao a SEFAZ
+        # responde SSLV3_ALERT_BAD_CERTIFICATE por nao conseguir montar a cadeia.
+        self._cadeia = list(extras or [])
         self._pfx = conteudo
 
     @property
@@ -66,11 +69,23 @@ class CertificadoA1:
 
     @property
     def certificado_pem(self) -> bytes:
+        """Somente a folha — vai embutida na assinatura do XML."""
         return self._cert.public_bytes(Encoding.PEM)
+
+    @property
+    def cadeia_tls_pem(self) -> bytes:
+        """Folha + intermediarias — vai no handshake TLS mutual auth."""
+        partes = [self._cert.public_bytes(Encoding.PEM)]
+        partes.extend(c.public_bytes(Encoding.PEM) for c in self._cadeia)
+        return b"".join(partes)
 
     @property
     def certificado_der(self) -> bytes:
         return self._cert.public_bytes(Encoding.DER)
+
+    @property
+    def certificados_na_cadeia(self) -> int:
+        return len(self._cadeia)
 
     def info(self) -> InfoCertificado:
         atributos = {a.oid: a.value for a in self._cert.subject}
@@ -104,7 +119,7 @@ class CertificadoA1:
 
         cert_path = destino / "certificado.pem"
         key_path = destino / "chave.pem"
-        cert_path.write_bytes(self.certificado_pem)
+        cert_path.write_bytes(self.cadeia_tls_pem)
         key_path.write_bytes(self.chave_pem)
         os.chmod(cert_path, 0o600)
         os.chmod(key_path, 0o600)

@@ -7,6 +7,7 @@ schema trata como obrigatorios em conjunto.
 
 from __future__ import annotations
 
+import ssl
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -28,6 +29,7 @@ from nfe_brasil.nfe.emissao import (
     Endereco,
     Item,
     Pagamento,
+    ResponsavelTecnico,
     assinar,
     construir_tnfe,
     montar_pacote,
@@ -37,7 +39,12 @@ from nfe_brasil.nfe.emissao import (
     verificar,
 )
 from nfe_brasil.nfe.emissao.chave import ChaveInvalidaError, calcular_dv
-from nfe_brasil.nfe.emissao.transporte import Servico, endpoint
+from nfe_brasil.nfe.emissao.transporte import (
+    Servico,
+    _corpo_resposta,
+    contexto_tls,
+    endpoint,
+)
 
 ESQUEMAS = Path(nfelib.__file__ or "").parent / "nfe" / "schemas" / "v4_0"
 
@@ -246,9 +253,12 @@ def test_nfce_sem_destinatario_e_valida_no_xsd(
 
     assert _validar(assinado, "nfe_v4.00.xsd") == []
     assert "<dest>" not in assinado
-    assert assinado.count("</ds:Signature>") == 1
+    assert assinado.count("</Signature>") == 1
+    # a assinatura vai no namespace padrao (sem prefixo ds:) — exigencia da SEFAZ (cStat 587)
+    assert '<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">' in assinado
+    assert "ds:Signature" not in assinado
 
-    resultado = verificar(assinado, ca_pem_file=str(cadeia_certificado[1]))
+    resultado = verificar(assinado)
     assert resultado["assinatura_valida"] == "true"
     assert resultado["titular"] == "LANCHONETE EXEMPLO LTDA.:11222333000181"
     assert resultado["chave"] == chave
@@ -263,7 +273,7 @@ def test_nfe_com_destinatario_e_valida_no_xsd(
 
     assert _validar(assinado, "nfe_v4.00.xsd") == []
     assert "<dest><CPF>52998224725</CPF>" in assinado
-    assert verificar(assinado, ca_pem_file=str(cadeia_certificado[1]))["assinatura_valida"] == "true"
+    assert verificar(assinado)["assinatura_valida"] == "true"
 
 
 def test_nfe_55_sem_destinatario_omite_o_grupo(emitente: Emitente, item: Item) -> None:
@@ -340,7 +350,7 @@ def test_pacote_assinado_nao_transmite_por_padrao(
 
     assert chave == obter_chave(dados)
     assert "<NFe xmlns=" in xml_envi
-    assert "<ds:Signature" in xml_envi
+    assert '<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">' in xml_envi
 
 
 # --------------------------------------------------------------------------- #
@@ -378,3 +388,91 @@ def test_total_da_nota_soma_os_itens(emitente: Emitente, item: Item) -> None:
     assert "<vNF>10.00</vNF>" in xml
     assert '<qCom>2.0000</qCom>' in xml
     assert "<vUnCom>5.0000000000</vUnCom>" in xml
+
+
+# --------------------------------------------------------------------------- #
+# Regras descobertas transmitindo de verdade para a SEFAZ-PR (homologacao)
+# --------------------------------------------------------------------------- #
+
+
+def test_tls_fixado_em_1_2() -> None:
+    """SEFAZ-PR nao completa o handshake em TLS 1.3 (handshake failure / bad certificate)."""
+    contexto = contexto_tls()
+
+    assert contexto.minimum_version == ssl.TLSVersion.TLSv1_2
+    assert contexto.maximum_version == ssl.TLSVersion.TLSv1_2
+
+
+def test_corpo_resposta_extrai_o_documento_e_nao_o_envelope() -> None:
+    """A resposta vem embrulhada em soap:Body/nfeResultMsg; o parser quer o retEnviNFe."""
+    resposta = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"><soap:Body>'
+        '<nfeResultMsg xmlns="http://www.portalfiscal.inf.br/nfe/wsdl/NFeAutorizacao4">'
+        '<retEnviNFe xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">'
+        "<cStat>100</cStat><xMotivo>Autorizado o uso da NF-e</xMotivo>"
+        "</retEnviNFe></nfeResultMsg></soap:Body></soap:Envelope>"
+    )
+
+    extraido = _corpo_resposta(resposta)
+
+    assert extraido.startswith("<retEnviNFe")
+    assert "nfeResultMsg" not in extraido
+    assert "<cStat>100</cStat>" in extraido
+
+
+def test_responsavel_tecnico_entra_no_xml_e_valida_no_xsd(
+    emitente: Emitente, item: Item, certificado: CertificadoA1
+) -> None:
+    """Sem infRespTec a SEFAZ devolve 972; o grupo precisa dos 4 campos."""
+    dados = _dados(emitente, item, modelo="65", com_destinatario=False).model_copy(
+        update={
+            "responsavel_tecnico": ResponsavelTecnico(
+                cnpj="11222333000181",
+                contato="CONTATO TECNICO",
+                email="tecnico@exemplo.com.br",
+                fone="(44) 3228-8785",
+            )
+        }
+    )
+    chave = obter_chave(dados)
+    xml = assinar(serializar(construir_tnfe(dados, chave)), certificado, chave=chave)
+
+    assert _validar(xml, "nfe_v4.00.xsd") == []
+    assert "<infRespTec>" in xml
+    assert "<xContato>CONTATO TECNICO</xContato>" in xml
+    assert "<email>tecnico@exemplo.com.br</email>" in xml
+    # fone sai so com digitos, conforme o leiaute
+    assert "<fone>4432288785</fone>" in xml
+    # idCSRT/hashCSRT so vao quando a UF exige o CSRT
+    assert "idCSRT" not in xml
+
+
+def test_sem_responsavel_tecnico_o_grupo_e_omitido(
+    emitente: Emitente, item: Item, certificado: CertificadoA1
+) -> None:
+    dados = _dados(emitente, item, modelo="65", com_destinatario=False)
+    chave = obter_chave(dados)
+    xml = assinar(serializar(construir_tnfe(dados, chave)), certificado, chave=chave)
+
+    assert _validar(xml, "nfe_v4.00.xsd") == []
+    assert "infRespTec" not in xml
+
+
+def test_csrt_entra_quando_informado(emitente: Emitente, item: Item) -> None:
+    dados = _dados(emitente, item, modelo="65", com_destinatario=False).model_copy(
+        update={
+            "responsavel_tecnico": ResponsavelTecnico(
+                cnpj="11222333000181",
+                contato="CONTATO TECNICO",
+                email="tecnico@exemplo.com.br",
+                fone="4432288785",
+                id_csrt="000001",
+                hash_csrt="ABCDEF0123456789ABCDEF0123456789ABCDEF01",
+            )
+        }
+    )
+    xml = serializar(construir_tnfe(dados, obter_chave(dados)))
+
+    assert "<idCSRT>000001</idCSRT>" in xml
+    assert "<hashCSRT>" in xml
