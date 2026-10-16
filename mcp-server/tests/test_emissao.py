@@ -37,6 +37,7 @@ from nfe_brasil.nfe.emissao import (
     verificar,
 )
 from nfe_brasil.nfe.emissao.chave import ChaveInvalidaError, calcular_dv
+from nfe_brasil.nfe.emissao.transporte import Servico, endpoint
 
 ESQUEMAS = Path(nfelib.__file__ or "").parent / "nfe" / "schemas" / "v4_0"
 
@@ -83,13 +84,13 @@ def _gerar_cadeia(diretorio: Path) -> tuple[Path, Path]:
     )
 
     chave = _chave_rsa()
-    cnpj = "09570279000113"
+    cnpj = "11222333000181"
     sujeito = x509.Name(
         [
             x509.NameAttribute(NameOID.COUNTRY_NAME, "BR"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "PAINEIRAS LANCHONETE LTDA."),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "LANCHONETE EXEMPLO LTDA."),
             x509.NameAttribute(
-                NameOID.COMMON_NAME, f"PAINEIRAS LANCHONETE LTDA.:{cnpj}"
+                NameOID.COMMON_NAME, f"LANCHONETE EXEMPLO LTDA.:{cnpj}"
             ),
         ]
     )
@@ -123,7 +124,7 @@ def _gerar_cadeia(diretorio: Path) -> tuple[Path, Path]:
     pfx = diretorio / "teste.pfx"
     pfx.write_bytes(
         pkcs12.serialize_key_and_certificates(
-            name=b"PAINEIRAS",
+            name=b"LANCHONETE EXEMPLO",
             key=chave,
             cert=cert,
             cas=[ca_cert],
@@ -148,8 +149,8 @@ def certificado(cadeia_certificado: tuple[Path, Path]) -> CertificadoA1:
 @pytest.fixture
 def emitente() -> Emitente:
     return Emitente(
-        cnpj="09570279000113",
-        razao_social="PAINEIRAS LANCHONETE LTDA.",
+        cnpj="11222333000181",
+        razao_social="LANCHONETE EXEMPLO LTDA.",
         inscricao_estadual="1000000000",
         cnae="5611203",
         crt="1",
@@ -214,12 +215,12 @@ def _validar(xml: str, arquivo_xsd: str) -> list[str]:
 
 
 def test_chave_tem_44_digitos_e_dv_calculado() -> None:
-    chave = "41261009570279000113650010000000011123456786"
+    chave = "41261011222333000181650010000000011123456780"
     campos = validar_chave(chave)
 
     assert len(chave) == 44
     assert campos["codigo_uf"] == "41"
-    assert campos["cnpj_emitente"] == "09570279000113"
+    assert campos["cnpj_emitente"] == "11222333000181"
     assert campos["modelo"] == "65"
     assert campos["numero"] == "000000001"
     assert calcular_dv(chave[:43]) == chave[43]
@@ -227,7 +228,7 @@ def test_chave_tem_44_digitos_e_dv_calculado() -> None:
 
 def test_chave_com_dv_errado_e_rejeitada() -> None:
     with pytest.raises(ChaveInvalidaError):
-        validar_chave("41261009570279000113650010000000011123456780")
+        validar_chave("41261011222333000181650010000000011123456781")
 
 
 # --------------------------------------------------------------------------- #
@@ -249,7 +250,7 @@ def test_nfce_sem_destinatario_e_valida_no_xsd(
 
     resultado = verificar(assinado, ca_pem_file=str(cadeia_certificado[1]))
     assert resultado["assinatura_valida"] == "true"
-    assert resultado["titular"] == "PAINEIRAS LANCHONETE LTDA.:09570279000113"
+    assert resultado["titular"] == "LANCHONETE EXEMPLO LTDA.:11222333000181"
     assert resultado["chave"] == chave
 
 
@@ -293,6 +294,42 @@ def test_envelope_do_lote_e_valido_no_xsd(
     assert "<indSinc>1</indSinc>" in xml_envi
     assert xml_nfe in xml_envi
     assert _validar(xml_envi, "enviNFe_v4.00.xsd") == []
+
+
+def test_nfce_tem_qrcode_v3_e_valida_no_xsd(
+    emitente: Emitente, item: Item, certificado: CertificadoA1
+) -> None:
+    """NFC-e exige o grupo infNFeSupl com o QR Code (sem ele, rejeicao 394)."""
+    dados = _dados(emitente, item, modelo="65", com_destinatario=False)
+    chave = obter_chave(dados)
+    assinado = assinar(serializar(construir_tnfe(dados, chave)), certificado, chave=chave)
+
+    esperado = f"http://www.fazenda.pr.gov.br/nfce/qrcode?p={chave}|3|2"
+    assert f"<qrCode>{esperado}</qrCode>" in assinado
+    assert "<urlChave>http://www.fazenda.pr.gov.br/nfce/consulta</urlChave>" in assinado
+    # O XSD valida o padrao do QR Code (v3 online) contra o schema oficial
+    assert _validar(assinado, "nfe_v4.00.xsd") == []
+
+
+def test_nfe_55_nao_leva_o_grupo_infnfesupl(emitente: Emitente, item: Item) -> None:
+    """NF-e modelo 55 com infNFeSupl e rejeitada (rejeicao 393)."""
+    dados = _dados(emitente, item, modelo="55", com_destinatario=True)
+    xml = serializar(construir_tnfe(dados, obter_chave(dados)))
+
+    assert "infNFeSupl" not in xml
+    assert "qrCode" not in xml
+
+
+def test_endpoint_separa_nfe_de_nfce() -> None:
+    """No PR a NFC-e usa host proprio (nfce.sefa.pr.gov.br), diferente da NF-e."""
+    assert (
+        endpoint(Servico.AUTORIZACAO, "2", "PR", "65")
+        == "https://homologacao.nfce.sefa.pr.gov.br/nfce/NFeAutorizacao4"
+    )
+    assert (
+        endpoint(Servico.AUTORIZACAO, "1", "PR", "55")
+        == "https://nfe.sefa.pr.gov.br/nfe/NFeAutorizacao4"
+    )
 
 
 def test_pacote_assinado_nao_transmite_por_padrao(

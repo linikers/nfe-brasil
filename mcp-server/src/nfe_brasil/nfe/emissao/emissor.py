@@ -59,13 +59,15 @@ def _envelope_lote(xml_nfe_assinado: str) -> str:
     )
 
 
-def montar_pacote(dados: DadosNota, certificado: CertificadoA1) -> tuple[str, str, str]:
+def montar_pacote(
+    dados: DadosNota, certificado: CertificadoA1, uf: str = "PR"
+) -> tuple[str, str, str]:
     """Monta e assina a NF-e. Devolve (chave, xml_nfe_assinado, xml_enviNFe).
 
     Nao transmite nada — usado para conferencia/validacao previa.
     """
     chave = builder.obter_chave(dados)
-    nfe = builder.construir_tnfe(dados, chave)
+    nfe = builder.construir_tnfe(dados, chave, uf)
     xml_nfe = builder.serializar(nfe)
     xml_assinado = assinar(xml_nfe, certificado, chave=chave)
     return chave, xml_assinado, _envelope_lote(xml_assinado)
@@ -79,7 +81,7 @@ def emitir(
     uf: str = "PR",
 ) -> ResultadoEmissao:
     """Emite a NF-e/NFC-e. Em homologacao a nota nao tem valor fiscal."""
-    chave, xml_assinado, xml_envi = montar_pacote(dados, certificado)
+    chave, xml_assinado, xml_envi = montar_pacote(dados, certificado, uf)
 
     resultado = ResultadoEmissao(
         chave=chave,
@@ -99,6 +101,7 @@ def emitir(
         certificado=(str(cert_path), str(key_path)),
         ambiente=dados.ambiente,
         uf=uf,
+        modelo=dados.modelo,
     )
     resultado.xml_retorno = resposta.xml
     resultado.url = resposta.url
@@ -132,6 +135,7 @@ def consultar_recibo(
     *,
     ambiente: str,
     uf: str = "PR",
+    modelo: str = "55",
 ) -> ResultadoEmissao:
     """Consulta o resultado do lote assincrono (NFeRetAutorizacao4)."""
     consulta = (
@@ -145,6 +149,7 @@ def consultar_recibo(
         certificado=(str(cert_path), str(key_path)),
         ambiente=ambiente,
         uf=uf,
+        modelo=modelo,
     )
 
     retorno: Any = XmlParser().from_string(resposta.xml)
@@ -170,11 +175,14 @@ def consultar_recibo(
     return resultado
 
 
-def consultar_status(certificado: CertificadoA1, *, ambiente: str, uf: str = "PR") -> dict[str, str]:
+def consultar_status(
+    certificado: CertificadoA1, *, ambiente: str, uf: str = "PR", modelo: str = "55"
+) -> dict[str, str]:
     """Consulta o status do servico de autorizacao (NFeStatusServico4)."""
     consulta = (
         '<consStatServ xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">'
-        f"<tpAmb>{ambiente}</tpAmb><cUF>41</cUF><xServ>STATUS</xServ></consStatServ>"
+        f"<tpAmb>{ambiente}</tpAmb><cUF>{transporte.codigo_uf(uf)}</cUF><xServ>STATUS</xServ>"
+        "</consStatServ>"
     )
     cert_path, key_path = certificado.escrever_pem()
     resposta = transporte.enviar(
@@ -183,6 +191,7 @@ def consultar_status(certificado: CertificadoA1, *, ambiente: str, uf: str = "PR
         certificado=(str(cert_path), str(key_path)),
         ambiente=ambiente,
         uf=uf,
+        modelo=modelo,
     )
     retorno: Any = XmlParser().from_string(resposta.xml)
     return {

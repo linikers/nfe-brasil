@@ -28,6 +28,7 @@ from xsdata.formats.dataclass.serializers.config import SerializerConfig
 
 from .chave import montar_chave
 from .schemas import DadosNota, Destinatario, Endereco, Item
+from .transporte import url_consulta_chave, url_qrcode
 
 NAMESPACE_NFE = "http://www.portalfiscal.inf.br/nfe"
 _DSIG = "http://www.w3.org/2000/09/xmldsig#"
@@ -205,7 +206,30 @@ def _item_det(item: Item, indice: int) -> Any:
     )
 
 
-def construir_tnfe(dados: DadosNota, chave: str) -> Nfe:
+def _inf_nfe_supl(dados: DadosNota, chave: str, uf: str = "PR") -> Any:
+    """Grupo infNFeSupl da NFC-e (QR Code + URL de consulta).
+
+    QR Code versao 3 ONLINE: <url>?p=<chave>|<versao>|<tpAmb>.
+    A partir da NT 2025.001 o CSC deixou de ser necessario.
+    """
+    if dados.modelo != "65":
+        return None
+
+    url = dados.url_qrcode or url_qrcode(uf, dados.modelo)
+    if not url:
+        raise ValueError(f"URL de consulta do QR Code nao configurada para a UF {uf}")
+
+    url_chave = dados.url_consulta_chave or url_consulta_chave(uf, dados.modelo)
+    if not url_chave:
+        raise ValueError(f"URL de consulta por chave nao configurada para a UF {uf}")
+
+    return Tnfe.InfNfeSupl(
+        qrCode=f"{url}?p={chave}|{dados.versao_qrcode}|{dados.ambiente}",
+        urlChave=url_chave,
+    )
+
+
+def construir_tnfe(dados: DadosNota, chave: str, uf: str = "PR") -> Nfe:
     """Monta o objeto Nfe (sem assinatura) para a chave informada."""
     emitente = dados.emitente
 
@@ -294,7 +318,7 @@ def construir_tnfe(dados: DadosNota, chave: str) -> Nfe:
         versao="4.00",
         Id=f"NFe{chave}",
     )
-    return Nfe(infNFe=inf_nfe)
+    return Nfe(infNFe=inf_nfe, infNFeSupl=_inf_nfe_supl(dados, chave, uf))
 
 
 def serializar(objeto: Any) -> str:

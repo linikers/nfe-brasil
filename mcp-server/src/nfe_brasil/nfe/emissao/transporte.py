@@ -1,7 +1,11 @@
 """Transporte SOAP 1.2 com TLS mutual auth para os webservices da SEFAZ.
 
-Endpoints da SEFAZ do Parana (autorizador proprio, nao usa SVRS).
-Fonte: tabela oficial de webservices replicada em `nfelib.nfe.client.v4_0.servers`.
+No Parana a NF-e (modelo 55) e a NFC-e (modelo 65) usam hosts diferentes:
+  NF-e  -> nfe.sefa.pr.gov.br
+  NFC-e -> nfce.sefa.pr.gov.br
+
+Fontes: tabela de webservices da SEFA/PR (sped.fazenda.pr.gov.br) e
+`nfelib.nfe.client.v4_0.servers`.
 """
 
 from __future__ import annotations
@@ -26,17 +30,53 @@ class Servico(str, Enum):
     RECEPCAO_EVENTO = "NFeRecepcaoEvento4"
 
 
-# UF -> base do webservice, por ambiente (1=producao, 2=homologacao).
-ENDPOINTS: dict[str, dict[str, str]] = {
+# UF -> modelo -> ambiente -> base do webservice (1=producao, 2=homologacao).
+ENDPOINTS: dict[str, dict[str, dict[str, str]]] = {
     "PR": {
-        "1": "https://nfe.sefa.pr.gov.br/nfe",
-        "2": "https://homologacao.nfe.sefa.pr.gov.br/nfe",
+        "55": {
+            "1": "https://nfe.sefa.pr.gov.br/nfe",
+            "2": "https://homologacao.nfe.sefa.pr.gov.br/nfe",
+        },
+        "65": {
+            "1": "https://nfce.sefa.pr.gov.br/nfce",
+            "2": "https://homologacao.nfce.sefa.pr.gov.br/nfce",
+        },
     },
     "SVRS": {
-        "1": "https://sefazvirtual.rs.gov.br",
-        "2": "https://hom1.sefazvirtual.rs.gov.br",
+        "55": {
+            "1": "https://sefazvirtual.rs.gov.br",
+            "2": "https://hom1.sefazvirtual.rs.gov.br",
+        },
+        "65": {
+            "1": "https://nfce.sefazvirtual.rs.gov.br",
+            "2": "https://hom1.nfce.sefazvirtual.rs.gov.br",
+        },
     },
 }
+
+# URL de consulta publica do QR Code e de consulta por chave (grupo infNFeSupl).
+URLS_QRCODE: dict[str, dict[str, str]] = {
+    "PR": {"65": "http://www.fazenda.pr.gov.br/nfce/qrcode"},
+}
+URLS_CONSULTA_CHAVE: dict[str, dict[str, str]] = {
+    "PR": {"65": "http://www.fazenda.pr.gov.br/nfce/consulta"},
+}
+
+# Codigo IBGE da UF (campo cUF do leiaute).
+CODIGO_UF: dict[str, str] = {
+    "RO": "11", "AC": "12", "AM": "13", "RR": "14", "PA": "15", "AP": "16", "TO": "17",
+    "MA": "21", "PI": "22", "CE": "23", "RN": "24", "PB": "25", "PE": "26", "AL": "27",
+    "SE": "28", "BA": "29", "MG": "31", "ES": "32", "RJ": "33", "SP": "35",
+    "PR": "41", "SC": "42", "RS": "43", "MS": "50", "MT": "51", "GO": "52", "DF": "53",
+}
+
+
+def codigo_uf(uf: str) -> str:
+    """Codigo IBGE (cUF) da UF."""
+    codigo = CODIGO_UF.get(uf.upper())
+    if not codigo:
+        raise SefazError(f"UF desconhecida: {uf}")
+    return codigo
 
 
 class SefazError(RuntimeError):
@@ -53,13 +93,23 @@ class RespostaSefaz:
     xml: str
 
 
-def endpoint(servico: Servico, ambiente: str, uf: str = "PR") -> str:
-    """URL completa do webservice para a UF e ambiente informados."""
-    tabela = ENDPOINTS.get(uf.upper(), ENDPOINTS["SVRS"])
-    base = tabela.get(ambiente)
+def endpoint(servico: Servico, ambiente: str, uf: str = "PR", modelo: str = "55") -> str:
+    """URL completa do webservice para UF, modelo e ambiente informados."""
+    por_uf = ENDPOINTS.get(uf.upper(), ENDPOINTS["SVRS"])
+    base = por_uf.get(modelo, por_uf["55"]).get(ambiente)
     if not base:
         raise SefazError(f"Ambiente desconhecido: {ambiente}")
     return f"{base}/{servico.value}"
+
+
+def url_qrcode(uf: str = "PR", modelo: str = "65") -> str | None:
+    """URL de consulta publica do QR Code da NFC-e no estado."""
+    return URLS_QRCODE.get(uf.upper(), {}).get(modelo)
+
+
+def url_consulta_chave(uf: str = "PR", modelo: str = "65") -> str | None:
+    """URL de consulta por chave de acesso (campo urlChave do infNFeSupl)."""
+    return URLS_CONSULTA_CHAVE.get(uf.upper(), {}).get(modelo)
 
 
 def _envelope(ns_servico: str, conteudo: str) -> str:
@@ -97,10 +147,11 @@ def enviar(
     certificado: tuple[str, str],
     ambiente: str,
     uf: str = "PR",
+    modelo: str = "55",
     timeout: float = 40.0,
 ) -> RespostaSefaz:
     """Envia um XML para o webservice da SEFAZ e devolve o XML de resposta."""
-    url = endpoint(servico, ambiente, uf)
+    url = endpoint(servico, ambiente, uf, modelo)
     ns = {
         Servico.AUTORIZACAO: _NS_AUTORIZACAO,
         Servico.RET_AUTORIZACAO: _NS_RET_AUTORIZACAO,

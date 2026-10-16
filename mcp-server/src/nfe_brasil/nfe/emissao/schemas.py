@@ -175,6 +175,12 @@ class DadosNota(BaseModel):
     data_emissao: datetime | None = None
     codigo_numerico: str | None = None
 
+    # NFC-e: dados do QR Code (grupo infNFeSupl). Na versao 3 o QR Code online
+    # e apenas <url>?p=<chave>|<versao>|<tpAmb> — nao exige mais o CSC.
+    url_qrcode: str | None = None
+    url_consulta_chave: str | None = None
+    versao_qrcode: str = "3"
+
     @field_validator("codigo_municipio_fato_gerador")
     @classmethod
     def _valida_ibge(cls, v: str) -> str:
