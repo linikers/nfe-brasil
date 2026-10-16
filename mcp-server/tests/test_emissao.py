@@ -10,6 +10,7 @@ from __future__ import annotations
 import ssl
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 
 import nfelib
@@ -20,7 +21,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import pkcs12
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from lxml import etree
+from pypdf import PdfReader
 
+from nfe_brasil.nfe.danfe_nfce import DanfeNfceError, gerar_danfe_nfce
 from nfe_brasil.nfe.emissao import (
     CertificadoA1,
     DadosNota,
@@ -476,3 +479,65 @@ def test_csrt_entra_quando_informado(emitente: Emitente, item: Item) -> None:
 
     assert "<idCSRT>000001</idCSRT>" in xml
     assert "<hashCSRT>" in xml
+
+
+# --------------------------------------------------------------------------- #
+# DANFE NFC-e (cupom 80 mm)
+# --------------------------------------------------------------------------- #
+
+
+def _proc_nfce(
+    dados: DadosNota, certificado: CertificadoA1, chave: str, protocolo: str = "141260001748360"
+) -> str:
+    nfe = assinar(serializar(construir_tnfe(dados, chave)), certificado, chave=chave)
+    prot = (
+        '<protNFe xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00"><infProt>'
+        f"<chNFe>{chave}</chNFe><nProt>{protocolo}</nProt>"
+        "<cStat>100</cStat><xMotivo>Autorizado o uso da NF-e</xMotivo>"
+        "</infProt></protNFe>"
+    )
+    return f'<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">{nfe}{prot}</nfeProc>'
+
+
+def test_danfe_nfce_gera_cupom_de_80mm_com_qr_e_dados(
+    emitente: Emitente, item: Item, certificado: CertificadoA1
+) -> None:
+    dados = _dados(emitente, item, modelo="65", com_destinatario=False)
+    chave = obter_chave(dados)
+    pdf = gerar_danfe_nfce(_proc_nfce(dados, certificado, chave))
+
+    assert pdf.startswith(b"%PDF")
+    pagina = PdfReader(BytesIO(pdf)).pages[0]
+    # bobina termica de 80 mm = 226,77 pt
+    assert abs(float(pagina.mediabox.width) - 226.77) < 1.0
+
+    texto = " ".join((pagina.extract_text() or "").split())
+    assert "DANFE NFC-e" in texto
+    assert "SEM VALOR FISCAL" in texto  # tpAmb=2
+    assert "LANCHONETE EXEMPLO LTDA." in texto
+    assert "11.222.333/0001-81" in texto  # CNPJ formatado
+    assert "10,00" in texto  # 2 x 5,00
+    assert "CONSUMIDOR NAO IDENTIFICADO" in texto  # sem <dest>
+    assert "141260001748360" in texto  # protocolo
+    assert chave[-4:] in texto.replace(" ", "")
+
+    # QR Code da NFC-e embutido como imagem
+    xobjects = pagina["/Resources"]["/XObject"]
+    assert any("/Image" in str(xobjects[chave_x]) for chave_x in xobjects)
+
+
+def test_danfe_nfce_sai_sem_qr_quando_o_xml_nao_tem_infnfesupl(
+    emitente: Emitente, item: Item, certificado: CertificadoA1
+) -> None:
+    dados = _dados(emitente, item, modelo="55", com_destinatario=True)
+    chave = obter_chave(dados)
+    pdf = gerar_danfe_nfce(_proc_nfce(dados, certificado, chave))
+
+    pagina = PdfReader(BytesIO(pdf)).pages[0]
+    assert "SEM VALOR FISCAL" in (pagina.extract_text() or "")
+    assert "/XObject" not in str(pagina["/Resources"])
+
+
+def test_danfe_nfce_rejeita_xml_que_nao_e_documento_fiscal() -> None:
+    with pytest.raises(DanfeNfceError):
+        gerar_danfe_nfce("<html><body>nao sou NF-e</body></html>")

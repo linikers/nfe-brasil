@@ -328,6 +328,54 @@ async def tool_gerar_danfe(xml_content: str) -> dict[str, Any]:
 
 
 @app.tool(
+    name="gerar_danfe_nfce",
+    description=(
+        "Gera o DANFE NFC-e (cupom 80 mm) em PDF a partir do XML da NFC-e (modelo 65). "
+        "Inclui QR Code, chave de acesso e protocolo de autorizacao. "
+        "Para NF-e modelo 55 use a ferramenta gerar_danfe. "
+        "O PDF e retornado em base64 no campo pdf_base64."
+    ),
+)
+async def tool_gerar_danfe_nfce(xml_content: str) -> dict[str, Any]:
+    """Gera o DANFE NFC-e (modelo 65) em PDF.
+
+    Aceita XML com ou sem o involucro <nfeProc>. O QR Code e lido do proprio XML
+    (grupo infNFeSupl) — sem ele o cupom sai sem o codigo.
+
+    Args:
+        xml_content: XML da NFC-e (string) com o namespace do portal fiscal.
+
+    Returns:
+        dict com pdf_base64, chave_acesso, nome_arquivo e ambiente.
+    """
+    import base64
+
+    from lxml import etree
+
+    from .nfe.danfe_nfce import DanfeNfceError, gerar_danfe_nfce
+
+    try:
+        pdf = gerar_danfe_nfce(xml_content)
+    except DanfeNfceError as erro:
+        raise ValueError(str(erro)) from erro
+
+    raiz = etree.fromstring(
+        xml_content.encode("utf-8") if isinstance(xml_content, str) else xml_content
+    )
+    ns = {"n": "http://www.portalfiscal.inf.br/nfe"}
+    inf = raiz.find(".//n:infNFe", ns)
+    chave = (inf.get("Id") or "")[3:] if inf is not None else ""
+    ambiente = raiz.findtext(".//n:ide/n:tpAmb", namespaces=ns) or ""
+
+    return {
+        "pdf_base64": base64.b64encode(pdf).decode("ascii"),
+        "chave_acesso": chave,
+        "nome_arquivo": f"DANFE_NFCE_{chave}.pdf",
+        "ambiente": "homologacao" if ambiente == "2" else "producao",
+    }
+
+
+@app.tool(
     name="validar_assinatura_nfe",
     description=(
         "Valida a assinatura digital XMLDSig de uma NF-e. "
