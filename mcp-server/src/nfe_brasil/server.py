@@ -536,6 +536,65 @@ async def tool_manifestar_nfe(
     }
 
 
+@app.tool(
+    name="emitir_nfe",
+    description=(
+        "EMITE uma NF-e (modelo 55) ou NFC-e (modelo 65): monta o XML, assina com o "
+        "certificado A1 (ICP-Brasil) e transmite para a SEFAZ. "
+        "Quando usar: quando o usuário pedir para emitir/faturar uma nota. "
+        "ATENÇÃO: ambiente=1 é PRODUÇÃO e gera documento fiscal REAL com valor fiscal; "
+        "use ambiente=2 (homologação) para testes. "
+        "NFC-e aceita consumidor não identificado; NF-e modelo 55 exige CPF/CNPJ do "
+        "destinatário (sem ele a SEFAZ rejeita com erro 719). "
+        "Parâmetros: dados_json (payload da nota), caminho_certificado (arquivo .pfx), "
+        "senha_certificado, ambiente (1 ou 2), transmitir (false = apenas monta e assina)."
+    ),
+)
+async def tool_emitir_nfe(
+    dados_json: str,
+    caminho_certificado: str,
+    senha_certificado: str,
+    transmitir: bool = True,
+    uf: str = "PR",
+) -> dict[str, Any]:
+    """Emite uma NF-e/NFC-e assinada com certificado A1 e envia para a SEFAZ.
+
+    Monta o XML no leiaute 4.00, assina com XMLDSig (RSA-SHA1) usando o certificado A1
+    informado e transmite ao webservice de autorizacao da SEFAZ da UF.
+
+    Args:
+        dados_json: JSON com o payload da emissao (modelo, serie, numero, emitente,
+            destinatario, itens, pagamentos, ambiente).
+        caminho_certificado: Caminho do arquivo .pfx/.p12 do certificado A1.
+        senha_certificado: Senha do certificado A1.
+        transmitir: True transmite para a SEFAZ; False apenas monta e assina o XML.
+        uf: UF do emitente (define o webservice). Padrao PR.
+
+    Returns:
+        dict com chave de acesso, cStat, motivo, protocolo e o XML da nota.
+    """
+    import json
+
+    from nfe_brasil.nfe.emissao import CertificadoA1, DadosNota, emitir
+
+    dados = DadosNota.model_validate(json.loads(dados_json))
+    certificado = CertificadoA1(caminho_certificado, senha_certificado)
+    resultado = emitir(dados, certificado, enviar_de_verdade=transmitir, uf=uf)
+
+    return {
+        "chave": resultado.chave,
+        "ambiente": resultado.ambiente,
+        "autorizada": resultado.autorizada,
+        "cStat": resultado.codigo_status,
+        "motivo": resultado.motivo,
+        "protocolo": resultado.protocolo,
+        "recibo": resultado.recibo,
+        "url": resultado.url,
+        "xml_nfe": resultado.xml_nfe,
+        "xml_retorno": resultado.xml_retorno,
+    }
+
+
 # ---------------------------------------------------------------------------
 # NFSe
 # ---------------------------------------------------------------------------

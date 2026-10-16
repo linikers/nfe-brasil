@@ -58,6 +58,7 @@ dependencies = [
     "brazilfiscalreport==1.0.0",
     "signxml>=4.5.1",
     "cryptography>=48.0.1",
+    "nfelib>=2.5.0",
 ]
 
 [project.optional-dependencies]

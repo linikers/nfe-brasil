@@ -1,0 +1,42 @@
+{
+  "modelo": "65",
+  "serie": "1",
+  "numero": "1",
+  "ambiente": "2",
+  "natureza_operacao": "Venda de mercadoria",
+  "codigo_uf": "41",
+  "codigo_municipio_fato_gerador": "4115200",
+  "emitente": {
+    "cnpj": "09570279000113",
+    "razao_social": "PAINEIRAS LANCHONETE LTDA.",
+    "inscricao_estadual": "SUBSTITUA_PELA_IE_REAL",
+    "crt": "1",
+    "endereco": {
+      "logradouro": "CERRO AZUL",
+      "numero": "2207",
+      "bairro": "VILA MARUMBY",
+      "codigo_municipio": "4115200",
+      "municipio": "MARINGA",
+      "uf": "PR",
+      "cep": "87005260",
+      "telefone": "4432288785"
+    }
+  },
+  "itens": [
+    {
+      "codigo": "REF-COCA-350",
+      "descricao": "REFRIGERANTE COCA-COLA 350ML",
+      "ncm": "22021000",
+      "cfop": "5405",
+      "unidade": "UN",
+      "quantidade": "2",
+      "valor_unitario": "5.00",
+      "csosn": "500",
+      "origem": "0"
+    }
+  ],
+  "pagamentos": [
+    { "forma": "01", "valor": "10.00" }
+  ],
+  "observacoes": "NOTA EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL"
+}
