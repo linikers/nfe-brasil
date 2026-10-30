@@ -57,6 +57,8 @@ services:
       - WEBHOOK_EVENTS_INSTANCE_CREATE=true
       - WEBHOOK_EVENTS_INSTANCE_DELETE=true
       - AUTHENTICATION_API_KEY=nfe-brasil-2026
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://nfe-redis:6379
       - LOG_LEVEL=ERROR,WARN,INFO
       - LOG_COLOR=true
       - LOG_BAILEYS=warn
@@ -105,6 +107,7 @@ services:
       - MCP_SERVER_URL=http://nfe-mcp-server:8000/mcp
       - EVOLUTION_API_URL=http://nfe-evolution-api:8080
       - EVOLUTION_API_KEY=nfe-brasil-2026
+      - WHATSAPP_ALLOWED_USERS=554484198075,554498133917
     depends_on:
       nfe-mcp-server:
         condition: service_healthy

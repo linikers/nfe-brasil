@@ -11,6 +11,13 @@ from .assinador import AssinaturaError, assinar, verificar
 from .builder import construir_tnfe, montar_xml, obter_chave, serializar
 from .certificado import CertificadoA1, CertificadoError
 from .chave import ChaveInvalidaError, calcular_dv, montar_chave, validar_chave
+from .helpers import (
+    destino_operacao,
+    indicador_presenca,
+    modalidade_frete,
+    resolver_ibge,
+    tipo_documento,
+)
 from .emissor import ResultadoEmissao, consultar_recibo, consultar_status, emitir, montar_pacote
 from .schemas import (
     DadosNota,
