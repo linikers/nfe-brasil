@@ -68,6 +68,31 @@ def env(nome: str, padrao: str | None = None) -> str:
     return valor
 
 
+def buscar_certificado(site: str, chave: str) -> tuple[str, str]:
+    """Baixa o .pfx (base64) e a senha do site, por chave de API.
+
+    Assim não existe cópia solta em disco: o certificado fica num lugar só e o
+    uso é auditado do outro lado. Devolve (caminho_temporario, senha).
+    """
+    resposta = httpx.get(
+        f"{site.rstrip('/')}/api/fiscal/certificado",
+        headers={"Authorization": f"Bearer {chave}"},
+        timeout=30,
+    )
+    resposta.raise_for_status()
+    dados = resposta.json()
+    if not dados.get("pfxBase64") or not dados.get("senha"):
+        raise ValueError("site não devolveu certificado + senha")
+
+    import base64
+    import tempfile
+
+    arquivo = Path(tempfile.mkdtemp(prefix="carcrew-cert-")) / "certificado.pfx"
+    arquivo.write_bytes(base64.b64decode(dados["pfxBase64"]))
+    arquivo.chmod(0o600)
+    return str(arquivo), dados["senha"]
+
+
 def puxar_pendentes(site: str, chave: str, dias: int) -> list[dict]:
     fim = datetime.now()
     inicio = fim.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -111,19 +136,27 @@ def montar_dados(nota: dict, numero: str, serie: str, uf: str, ambiente: str) ->
 
     ibge = endereco.get("codigoMunicipio") or resolver_ibge(endereco.get("cep"))
     if not ibge:
-        raise ValueError("não foi possível resolver o código IBGE do município (CEP)")
+        raise ValueError("não foi possível resolver o código IBGE do destinatário (CEP)")
+
+    ibge_emitente = emitente.get("endereco", {}).get("codigoMunicipio") or resolver_ibge(
+        emitente.get("endereco", {}).get("cep")
+    )
+    if not ibge_emitente:
+        raise ValueError("não foi possível resolver o código IBGE do emitente (cMunFG)")
 
     tipo, digitos = tipo_documento(dest.get("documento"))
     if tipo is None:
         raise ValueError("destinatário sem CPF/CNPJ válido")
 
+    # infRespTec: CNPJ/contato/fone vêm do cadastro do site; env só sobrescreve
+    cnpj_resp = os.environ.get("CARCREW_RESP_CNPJ") or emitente.get("cnpj")
     resp_tecnico = None
-    if os.environ.get("CARCREW_RESP_CNPJ"):
+    if cnpj_resp:
         resp_tecnico = ResponsavelTecnico(
-            cnpj=os.environ["CARCREW_RESP_CNPJ"],
-            contato=env("CARCREW_RESP_CONTATO", "Suporte"),
-            email=env("CARCREW_RESP_EMAIL", "suporte@localhost"),
-            fone=env("CARCREW_RESP_FONE", "4400000000"),
+            cnpj=cnpj_resp,
+            contato=(os.environ.get("CARCREW_RESP_CONTATO") or emitente.get("nomeFantasia") or emitente.get("razaoSocial") or "Suporte")[:60],
+            email=(os.environ.get("CARCREW_RESP_EMAIL") or emitente.get("email") or "suporte@localhost")[:60],
+            fone=(os.environ.get("CARCREW_RESP_FONE") or emitente.get("telefone") or "4400000000"),
         )
 
     return DadosNota(
@@ -132,19 +165,24 @@ def montar_dados(nota: dict, numero: str, serie: str, uf: str, ambiente: str) ->
         numero=numero,
         ambiente=ambiente,  # type: ignore[arg-type]
         codigo_uf=str(nota["emitente"].get("uf") and _codigo_uf(nota["emitente"]["uf"])),
-        codigo_municipio_fato_gerador=ibge if nota["emitente"].get("uf") else ibge,
+        codigo_municipio_fato_gerador=ibge_emitente,
         emitente=Emitente(
             cnpj=emitente["cnpj"],
-            razao_social=emitente["razaoSocial"],
+            razao_social=(emitente.get("razaoSocial") or "")[:60],
+            nome_fantasia=(emitente.get("nomeFantasia") or None),
             inscricao_estadual=emitente.get("ie") or "",
+            inscricao_municipal=(emitente.get("im") or None),
+            cnae=(emitente.get("cnae") or None),
             endereco=Endereco(
-                logradouro="ENDERECO DO EMITENTE",
-                numero="S/N",
-                bairro="CENTRO",
-                codigo_municipio=ibge,
-                municipio="MARINGA",
-                uf=uf,
-                cep="87000000",
+                logradouro=(emitente["endereco"].get("logradouro") or "")[:60] or "NAO INFORMADO",
+                numero=emitente["endereco"].get("numero") or "S/N",
+                complemento=(emitente["endereco"].get("complemento") or None),
+                bairro=(emitente["endereco"].get("bairro") or "CENTRO")[:60],
+                codigo_municipio=emitente["endereco"].get("codigoMunicipio") or ibge,
+                municipio=(emitente["endereco"].get("cidade") or "MARINGA")[:60],
+                uf=(emitente["endereco"].get("uf") or uf)[:2],
+                cep=(emitente["endereco"].get("cep") or ""),
+                telefone=(emitente.get("telefone") or None),
             ),
         ),
         destinatario=Destinatario(
@@ -207,7 +245,12 @@ def main() -> int:
     uf = os.environ.get("CARCREW_UF", "PR")
     ambiente = "1" if args.producao else "2"
 
-    certificado = CertificadoA1(env("CARCREW_PFX"), env("CARCREW_PFX_SENHA"))
+    if os.environ.get("CARCREW_PFX"):
+        certificado = CertificadoA1(env("CARCREW_PFX"), env("CARCREW_PFX_SENHA"))
+    else:
+        caminho, senha_cert = buscar_certificado(site, chave)
+        certificado = CertificadoA1(caminho, senha_cert)
+        print(f"[worker] certificado obtido do site (temporário em {caminho})")
     notas = puxar_pendentes(site, chave, dias=30)
     print(f"[worker] {len(notas)} nota(s) na fila · ambiente={'producao' if ambiente == '1' else 'homologacao'}")
 
